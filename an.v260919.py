@@ -46,6 +46,20 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def set_windows_app_id(app_id="alpaca.notepad"):
+    """Windows 작업표시줄이 이 프로그램을 python/pythonw나 다른 프로그램과 묶지 않고
+    독립된 앱으로 인식하도록 AppUserModelID를 지정함. 창에 지정한 아이콘이
+    작업표시줄에도 제대로 표시되게 하는 데 필요하며, 반드시 tk.Tk()를 만들기 전에
+    호출해야 함. Windows가 아니거나 API가 없으면 조용히 무시함."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
+
+
 # 일반 UI 라벨/입력창에 쓰는 공통 글꼴. 사용자가 설정으로 바꾸는 대상이 아니라
 # (메모 "내용"의 글꼴만 설정 가능 - content_font) 실행 중 값이 바뀌지 않으므로
 # 인스턴스 속성이 아닌 모듈 상수로 둠
@@ -1859,8 +1873,10 @@ class MemoApp:
         self.root.title("알파카 메모장 (Alpaca Notepad)")
         self.root.minsize(800, 600)
         # 아이콘 설정 (오류 발생 시 무시)
+        # default=를 지정하면 타이틀바뿐 아니라 작업표시줄 아이콘, 그리고 이후에
+        # 열리는 설정/일괄삭제 같은 팝업 창에도 같은 아이콘이 적용됨
         try:
-            self.root.iconbitmap(resource_path("an.ico"))
+            self.root.iconbitmap(default=resource_path("an.ico"))
         except Exception as e:
             print(f"아이콘 로드 실패: {e}")
 
@@ -2326,6 +2342,7 @@ class MemoApp:
 
 
 if __name__ == "__main__":
+    set_windows_app_id()  # 반드시 tk.Tk() 생성 전에 호출
     root = tk.Tk()
     app = MemoApp(root)
     root.mainloop()
