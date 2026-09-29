@@ -77,7 +77,7 @@ AUTOSAVE_DEBOUNCE_MS = 500
 # 달력메모 탭 달력의 날짜 칸(Canvas) 크기(px)
 CAL_CELL_W = 40
 CAL_CELL_H = 34
-# 달력메모 탭 왼쪽(달력) 영역의 고정 폭(px) - 월별보기/1년전체 폭을 통일하고,
+# 달력메모 탭 왼쪽(달력) 영역의 고정 폭(px) - 월별보기/1년전체보기/목록보기 폭을 통일하고,
 # 사용자가 크기조절 막대로 바꿀 수 없도록 PanedWindow 대신 고정폭 Frame에 사용
 CAL_LEFT_WIDTH = 360
 
@@ -168,17 +168,35 @@ def apply_titlebar_theme(root, dark):
 # 새 탭을 추가하려면:
 #   1) GeneralMemoTab/CalendarMemoTab처럼 새 클래스를 만들고
 #      __init__(self, parent, app)에서 parent(ttk.Frame) 위에 UI를 구성한다.
-#   2) 아래 메서드를 구현하면 MemoApp이 알아서 호출해준다 (탭마다 자기 몫만 처리):
-#        - apply_theme_colors(self, colors)  : 테마(라이트/다크) 변경 시
-#        - set_content_font(self, font)      : "글꼴 설정"에서 내용 글꼴 변경 시
-#        - get_status_text(self)             : 상태표시줄에 표시할 문자열
-#        - get_copy_target(self)             : (텍스트위젯, 복사완료라벨) 또는 None
-#        - on_activated(self)                : (선택) 이 탭으로 전환되는 순간
-#   3) MemoApp.__init__에서 notebook에 탭을 추가하고 self.tabs 리스트에 넣는다.
-#   4) 이 탭만의 단축키는 root.bind(...)를 새 탭의 메서드로 바로 연결하면 되고,
-#      여러 탭이 같은 키를 다르게 처리해야 하면(Ctrl+D, Ctrl+N 등) MemoApp에
-#      작은 라우터 메서드를 하나 추가해 self._is_general_tab_active() 같은 확인
-#      후 알맞은 탭에 위임한다 (기존 _on_ctrl_d_key 참고).
+#   2) 아래 메서드를 구현하면 MemoApp이 알아서 호출해준다.
+#        [필수 4개]
+#        - apply_theme_colors(self, colors)   : 테마(라이트/다크) 변경 시
+#        - set_content_font(self, font_tuple) : "글꼴 설정"에서 내용 글꼴 변경 시
+#        - get_status_text(self)              : 상태표시줄에 표시할 문자열
+#        - get_copy_target(self)              : (텍스트위젯, 복사완료라벨) 또는 None
+#        [선택 - 구현한 탭이 활성화되어 있을 때만 호출됨]
+#        - on_activated(self, event=None)     : 이 탭으로 전환되는 순간
+#        - on_ctrl_n(self, event=None) / on_ctrl_d(self, event=None)
+#        - focus_content(self, event=None)    : Ctrl+M
+#        - focus_primary(self, event=None)    : Ctrl+T
+#        - focus_list(self, event=None)       : Ctrl+L
+#        - on_page_up(self, event=None) / on_page_down(self, event=None)
+#        - insert_text_at_widget(self, widget, text) -> bool  : Alt+T / Alt+숫자
+#   3) MemoApp.__init__에서 notebook에 프레임을 추가하고 self.tabs 리스트에 넣는다.
+#      (self.tabs의 순서는 반드시 notebook.add() 순서와 같아야 함)
+#   4) 이 탭에서만 쓰는 전용 단축키(예: 달력메모의 Alt+H)는, 그 이름의 메서드를
+#      이 탭에만 만들고 MemoApp.__init__에 self.root.bind("<키>", ...)와 아래
+#      "탭 전용 단축키" 라우터(_on_alt_h_key 참고)를 한 줄씩 추가한다.
+#      Delete/Enter/Space처럼 "그 위젯에 포커스가 있을 때만" 동작해야 하는 키는
+#      root가 아니라 그 위젯에 직접 bind()하면 되고, 그러면 다른 탭과 자동으로
+#      격리되므로 이런 라우터가 필요 없다.
+#
+# 왜 "지금 활성 탭이 무엇인지" 하드코딩해서 확인하지 않는가:
+#   예전(탭 2개)에는 "일반메모가 아니면 달력메모"라고 가정하는 코드가 많았다.
+#   그런데 탭이 늘어나면 이 가정이 깨져 엉뚱한 탭의 동작이 실행될 수 있으므로,
+#   아래처럼 "활성 탭에 그 이름의 메서드가 있으면 호출하고, 없으면 아무 일도
+#   하지 않는다"는 방식으로 전부 바꿨다. 탭이 몇 개로 늘어나도 이 방식은 그대로
+#   올바르게 동작한다.
 # ============================================================================
 
 
@@ -330,7 +348,8 @@ class MemoStore:
             'font_size': 12,
             'window_geometry': '800x600+100+100',
             'copy_shortcut': 'Ctrl+Shift+C',
-            'theme_mode': 'light'
+            'theme_mode': 'light',
+            'show_holidays_in_list': False
         }
 
         if not os.path.exists(self.settings_file):
@@ -349,19 +368,22 @@ class MemoStore:
             theme_mode = config.get('Theme', 'mode', fallback=default_settings['theme_mode'])
             if theme_mode not in ("light", "dark"):
                 theme_mode = default_settings['theme_mode']
+            show_holidays_in_list = config.getboolean(
+                'Calendar', 'show_holidays_in_list', fallback=default_settings['show_holidays_in_list'])
             return {
                 'font_family': font_family,
                 'font_size': font_size,
                 'window_geometry': window_geometry,
                 'copy_shortcut': copy_shortcut,
-                'theme_mode': theme_mode
+                'theme_mode': theme_mode,
+                'show_holidays_in_list': show_holidays_in_list
             }
         except (configparser.Error, ValueError):
             return default_settings
 
     def save_settings(self, settings):
-        """settings: font_family/font_size/window_geometry/copy_shortcut/theme_mode
-        키를 모두 가진 딕셔너리 (SettingsManager.save()가 조립해서 넘김)"""
+        """settings: font_family/font_size/window_geometry/copy_shortcut/theme_mode/
+        show_holidays_in_list 키를 모두 가진 딕셔너리 (SettingsManager.save()가 조립해서 넘김)"""
         config = configparser.ConfigParser()
         config['Font'] = {
             'family': settings.get('font_family', '맑은 고딕'),
@@ -375,6 +397,9 @@ class MemoStore:
         }
         config['Theme'] = {
             'mode': settings.get('theme_mode', 'light')
+        }
+        config['Calendar'] = {
+            'show_holidays_in_list': str(bool(settings.get('show_holidays_in_list', False)))
         }
         try:
             self._atomic_write(self.settings_file, config.write)
@@ -761,6 +786,67 @@ class GeneralMemoTab:
         except Exception:
             pass
 
+    # ---- 탭 전용/공통 단축키 인터페이스 (MemoApp이 활성 탭에 위임함) ----
+
+    def on_ctrl_n(self, event=None):
+        self.add_memo()
+        return "break"
+
+    def on_ctrl_d(self, event=None):
+        """Ctrl+D: 제목/내용 편집창에 포커스가 있을 때만 선택된 메모를 삭제.
+        (메모 목록 자체에 포커스가 있을 때는 이미 Delete 키가 그 역할을 함)"""
+        focused = self.app.root.focus_get()
+        if focused is self.title_entry or focused is self.content_text:
+            self.remove_memo()
+            return "break"
+        return None
+
+    def focus_content(self, event=None):
+        if str(self.content_text.cget("state")) == tk.NORMAL:
+            self.content_text.focus_set()
+        return "break"
+
+    def focus_primary(self, event=None):
+        # ttk.Entry의 cget('state')는 일반 str이 아닌 Tcl 객체를 반환하므로 str()로 변환 후 비교해야 함
+        if str(self.title_entry.cget('state')) == tk.NORMAL:
+            self.title_entry.focus_set()
+            self.title_entry.select_range(0, tk.END)
+        return "break"
+
+    def focus_list(self, event=None):
+        self.focus_on_listbox()
+        return "break"
+
+    def on_page_up(self, event=None):
+        if self._is_listbox_focused():
+            self.move_memo_up()
+
+    def on_page_down(self, event=None):
+        if self._is_listbox_focused():
+            self.move_memo_down()
+
+    def insert_text_at_widget(self, widget, text):
+        """Alt+T(날짜/시간)·Alt+숫자(빠른 입력)의 삽입 대상인지 확인하고, 맞으면
+        삽입 후 True를 반환함. (MemoApp._insert_text_at_focus가 모든 탭에 순서대로
+        물어보므로, 이 탭의 위젯이 아니면 False를 반환해 다음 탭에게 넘김)"""
+        if widget is self.title_entry:
+            try:
+                self.title_entry.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+            self.title_entry.insert(tk.INSERT, text)
+            self.update_memo_realtime(update_list=True)
+            return True
+        if widget is self.content_text:
+            try:
+                self.content_text.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+            self.content_text.insert(tk.INSERT, text)
+            self.update_memo_realtime(update_list=False)
+            return True
+        return False
+
     # ---- 메모 목록/편집 ----
 
     def toggle_right_panel(self, enabled):
@@ -881,12 +967,6 @@ class GeneralMemoTab:
         if self.current_index != -1:
             self.listbox.selection_set(self.current_index)
             self.listbox.activate(self.current_index)
-
-    def focus_on_title(self):
-        # ttk.Entry의 cget('state')는 일반 str이 아닌 Tcl 객체를 반환하므로 str()로 변환 후 비교해야 함
-        if str(self.title_entry.cget('state')) == tk.NORMAL:
-            self.title_entry.focus_set()
-            self.title_entry.select_range(0, tk.END)
 
     def update_listbox_selection(self):
         """메모 위치 변경 시 스크롤 위치를 유지하면서 업데이트"""
@@ -1061,7 +1141,7 @@ class GeneralMemoTab:
 
 
 class CalendarMemoTab:
-    """"달력메모" 탭: 왼쪽 달력([월별보기]/[1년전체]) + 오른쪽 날짜별 메모 내용."""
+    """"달력메모" 탭: 왼쪽 달력([월별보기]/[1년전체보기]/[목록보기]) + 오른쪽 날짜별 메모 내용."""
 
     def __init__(self, parent, app):
         self.app = app
@@ -1088,32 +1168,58 @@ class CalendarMemoTab:
 
         self.cal_view_notebook = ttk.Notebook(cal_left)
 
-        # [이전 메모]/[다음 메모] 버튼 - 달력 영역(cal_left) 맨 아래, 상태표시줄 바로 위.
-        # side=BOTTOM으로 먼저 배치해야 아래에서 expand=True로 채워지는 노트북이
-        # 이 영역을 침범하지 않음 (pack은 호출 순서대로 공간을 배정함)
+        # 기본 ttk 버튼의 좌우 패딩이 넓어서 여러 개를 고정폭 안에 나란히 놓으면 밀려나
+        # 화면 밖으로 잘리므로, 이 좌측 영역(cal_left, 고정폭)에서 쓰는 버튼들은 좌우
+        # 패딩을 줄인 전용 스타일을 공유해서 씀 (아래 공용 4버튼과, 월별보기의
+        # 이전/오늘/다음 버튼 모두 이 스타일을 사용함)
+        nav_btn_style = ttk.Style()
+        nav_btn_style.configure("CalNav.TButton", padding=(2, 4), width=1)
+
+        # [추가]/[제거]/[◀이전]/[다음▶] 버튼 - 달력 영역(cal_left) 맨 아래, 상태표시줄
+        # 바로 위. side=BOTTOM으로 먼저 배치해야 아래에서 expand=True로 채워지는
+        # 노트북이 이 영역을 침범하지 않음(pack은 호출 순서대로 공간을 배정함).
+        # [월별보기]/[1년전체보기]/[목록보기] 중 어느 서브탭에 있든 이 네 버튼은 항상
+        # 같은 자리에서 동일하게 동작함. 명칭에서 "메모"를 빼고 전용 스타일(CalNav.TButton)로
+        # 좌우 패딩을 줄여 고정폭(CAL_LEFT_WIDTH) 안에 4개가 모두 보이도록 했고, 배치
+        # 순서도 다른 탭([추가][제거][▲][▼])과 일관되도록 [추가][제거][◀이전][다음▶]
+        # 순으로 맞춤
         cal_nav_buttons = ttk.Frame(cal_left)
         cal_nav_buttons.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
-        self.prev_memo_button = ttk.Button(cal_nav_buttons, text="◀ 이전 메모",
-                                            command=lambda: self.go_to_adjacent_memo_date(-1))
-        self.prev_memo_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-        self.next_memo_button = ttk.Button(cal_nav_buttons, text="다음 메모 ▶",
-                                            command=lambda: self.go_to_adjacent_memo_date(1))
-        self.next_memo_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 2))
+        add_memo_btn = ttk.Button(cal_nav_buttons, text="추가", style="CalNav.TButton",
+                                   command=self._open_add_memo_dialog)
+        add_memo_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
         # 선택된 날짜에 이미 내용이 있을 때만 활성화 (초기 상태 - 아래 date_content_text가
         # 아직 만들어지기 전이므로 위젯이 아닌 calendar_memos 딕셔너리로 직접 확인)
         initial_has_content = bool(self.calendar_memos.get(self.selected_date, "").strip())
         self.remove_date_memo_button = ttk.Button(
-            cal_nav_buttons, text="메모 제거", command=self.remove_date_memo,
+            cal_nav_buttons, text="제거", style="CalNav.TButton", command=self.remove_date_memo,
             state=(tk.NORMAL if initial_has_content else tk.DISABLED))
-        self.remove_date_memo_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+        self.remove_date_memo_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 2))
+        self.prev_memo_button = ttk.Button(cal_nav_buttons, text="◀ 이전", style="CalNav.TButton",
+                                            command=lambda: self.go_to_adjacent_memo_date(-1))
+        self.prev_memo_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 2))
+        self.next_memo_button = ttk.Button(cal_nav_buttons, text="다음 ▶", style="CalNav.TButton",
+                                            command=lambda: self.go_to_adjacent_memo_date(1))
+        self.next_memo_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
 
         self.cal_view_notebook.pack(fill=tk.BOTH, expand=True)
         self.cal_view_notebook.bind("<<NotebookTabChanged>>", self._on_cal_view_tab_changed)
+        # cal_view_notebook은 ttk.Notebook이라 Ctrl+Tab/Ctrl+Shift+Tab에 대한 자체
+        # 기본 바인딩(자신의 서브탭끼리 전환)을 갖고 있음. 이 서브노트북 위젯 자체에
+        # 키보드 포커스가 있으면(탭 헤더를 클릭하거나 Alt+M/Y/L로 전환한 직후 등) 그
+        # 기본 동작이 root 레벨 바인딩보다 먼저 실행돼, 최상단 [일반메모]/[달력메모]
+        # 전환이 아니라 이 서브탭끼리만 전환되는 문제가 있었음. 위젯
+        # 인스턴스에 직접 같은 키를 바인딩해 "break"로 가로채면 클래스 기본 동작보다
+        # 먼저 처리되어 이 문제가 해결됨
+        self.cal_view_notebook.bind("<Control-Tab>", lambda e: self.app._cycle_top_tab(1))
+        self.cal_view_notebook.bind("<Control-Shift-Tab>", lambda e: self.app._cycle_top_tab(-1))
 
         month_tab = ttk.Frame(self.cal_view_notebook)
         year_tab = ttk.Frame(self.cal_view_notebook)
+        list_tab = ttk.Frame(self.cal_view_notebook)
         self.cal_view_notebook.add(month_tab, text="월별보기")
-        self.cal_view_notebook.add(year_tab, text="1년전체")
+        self.cal_view_notebook.add(year_tab, text="1년전체보기")
+        self.cal_view_notebook.add(list_tab, text="목록보기")
 
         # -- 월별보기 --
         self.month_year_var = tk.StringVar(value=str(self.cal_year))
@@ -1148,11 +1254,8 @@ class CalendarMemoTab:
         for c in range(7):
             m_nav2.grid_columnconfigure(c + 1, minsize=CAL_CELL_W + 2)
 
-        # 기본 ttk 버튼의 좌우 패딩이 넓어서 2칸(84px)에 맞추면 오히려 칸이 밀려나므로,
-        # 이 버튼들만 좌우 패딩을 줄인 전용 스타일을 사용해 요일 칸 폭에 정확히 맞춤
-        nav_btn_style = ttk.Style()
-        nav_btn_style.configure("CalNav.TButton", padding=(2, 4), width=1)
-
+        # "CalNav.TButton" 스타일(좌우 패딩을 줄여 2칸(84px)에 정확히 맞춤)은 위
+        # cal_nav_buttons 블록에서 이미 정의해뒀으므로 여기서는 재사용만 함
         ttk.Button(m_nav2, text="◀", style="CalNav.TButton",
                    command=lambda: self.go_to_month(self.cal_year, self.cal_month - 1)
                    ).grid(row=0, column=1, columnspan=2, sticky="nsew", padx=1, pady=1, ipady=4)
@@ -1179,7 +1282,7 @@ class CalendarMemoTab:
         self.month_grid_frame = tk.Frame(month_tab)
         self.month_grid_frame.pack(anchor="w", padx=6, pady=(2, 8))
 
-        # -- 1년전체 --
+        # -- 1년전체보기 --
         self.year_year_var = tk.StringVar(value=str(self.cal_year_year))
 
         y_nav = ttk.Frame(year_tab)
@@ -1229,6 +1332,35 @@ class CalendarMemoTab:
         )
         self.year_canvas.bind("<Enter>", lambda e: self.year_canvas.bind_all("<MouseWheel>", self._on_year_mousewheel))
         self.year_canvas.bind("<Leave>", lambda e: self.year_canvas.unbind_all("<MouseWheel>"))
+
+        # -- 목록보기 (달력 그리드 대신, 메모가 있는 날짜만 목록으로 보여줌) --
+        # 이전메모/다음메모/메모추가/메모제거는 아래 공용 cal_nav_buttons에만 있고,
+        # 이 서브탭 자체에는 목록과 "공휴일 표시" 체크박스만 있음 (다른 서브탭과 같은
+        # 자리에서 같은 동작을 하는 버튼을 굳이 이 탭 안에 또 둘 필요가 없음)
+        self._date_list_keys = []  # date_listbox의 각 행이 어떤 날짜인지 (표시 순서대로)
+
+        # [공휴일 표시] 체크박스 - 목록 아래쪽에 고정. side=BOTTOM으로 목록(list_container)보다
+        # 먼저 배치해야 아래에서 expand=True로 채워지는 목록이 이 자리를 침범하지 않음(pack은
+        # 호출 순서대로 공간을 배정함). 체크 상태는 settings.ini에 저장해 다음 실행 때도
+        # 기억하고, Alt+H(목록보기 서브탭이 활성화되어 있을 때만 동작 - on_alt_h 참고)로도
+        # 켜고 끌 수 있음
+        list_bottom = ttk.Frame(list_tab)
+        list_bottom.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(4, 8))
+        self.show_holidays_var = tk.BooleanVar(
+            value=self.app.settings_mgr.settings.get("show_holidays_in_list", False))
+        self.show_holidays_check = ttk.Checkbutton(
+            list_bottom, text="공휴일 표시", variable=self.show_holidays_var,
+            command=self._on_toggle_show_holidays)
+        self.show_holidays_check.pack(side=tk.LEFT)
+
+        list_container = ttk.Frame(list_tab)
+        list_container.pack(fill=tk.BOTH, expand=True, padx=6, pady=(8, 4))
+        self.date_listbox = tk.Listbox(list_container, exportselection=False, font=UI_FONT)
+        self.date_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        date_list_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.date_listbox.yview)
+        date_list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.date_listbox.config(yscrollcommand=date_list_scroll.set)
+        self.date_listbox.bind("<<ListboxSelect>>", self._on_date_listbox_select)
 
         # ---- 오른쪽: 달력 메모 내용 (제목 필드 없음) ----
         cal_right = ttk.Frame(cal_container)
@@ -1281,7 +1413,18 @@ class CalendarMemoTab:
             else:
                 lbl.config(bg=colors["bg"], fg=colors["fg"])
 
-        # 1년전체의 스크롤바 (항상 뚜렷하게 보이도록 기본 Tk 스크롤바 사용 - 테마색 적용)
+        # 목록보기의 날짜 목록
+        self.date_listbox.config(
+            bg=colors["bg"], fg=colors["fg"],
+            selectbackground=colors["list_select_bg"],
+            selectforeground=colors["list_select_fg"],
+            relief=tk.FLAT, borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+        )
+
+        # 1년전체보기의 스크롤바 (항상 뚜렷하게 보이도록 기본 Tk 스크롤바 사용 - 테마색 적용)
         self.year_scrollbar.config(
             bg=colors["border"], troughcolor=colors["bg"],
             activebackground=colors["accent"], highlightthickness=0,
@@ -1293,6 +1436,13 @@ class CalendarMemoTab:
         self.render_month_view()
         self.year_grid_frame.config(bg=colors["border"])
         self.render_year_view()
+        # 이 메서드가 (테마 적용의 부수효과로) 곧 앱 시작 시 최초 1회 호출되는 지점이라,
+        # 월별보기/1년전체보기와 마찬가지로 목록보기도 여기서 한 번 그려줘야 함. 이걸
+        # 빠뜨리면 처음 실행 후 목록보기 탭을 눌러도 빈 화면만 보이다가, 이전/다음 메모
+        # 이동이나 메모 추가처럼 on_calendar_date_click()을 거치는 다른 동작을 해야만
+        # (그 안에서 _refresh_calendar_views()가 호출되며) 비로소 목록이 채워지는
+        # 문제가 있었음
+        self._refresh_date_list()
 
     def get_status_text(self):
         memo_count = len(self.calendar_memos)
@@ -1312,17 +1462,74 @@ class CalendarMemoTab:
             return None
         return (self.date_content_text, self.date_copy_status_label)
 
-    def on_activated(self):
+    def on_activated(self, event=None):
         """[일반메모]/[달력메모] 탭 전환으로 이 탭이 선택되는 순간 호출됨.
         "오늘" 표시가 최신 날짜를 반영하도록 다시 그림(자정 경과 대비)."""
         if self._is_year_view_active():
             self.render_year_view()
             self._year_view_stale = False
+        elif self._is_list_view_active():
+            self._refresh_date_list()
+            self._list_view_stale = False
         else:
             self.render_month_view()
             self._month_view_stale = False
 
-    # ---- 서브탭(월별보기/1년전체) 및 날짜 이동 ----
+    # ---- 탭 전용/공통 단축키 인터페이스 (MemoApp이 활성 탭에 위임함) ----
+
+    def on_ctrl_d(self, event=None):
+        return self.remove_date_memo()
+
+    def focus_content(self, event=None):
+        self.date_content_text.focus_set()
+        return "break"
+
+    def focus_primary(self, event=None):
+        """Ctrl+T: 서브탭에 관계없이 오늘이 있는 달/해로 이동함과 동시에 오늘 날짜를
+        선택해 오른쪽 편집창도 오늘 메모로 전환함 (go_to_today()가 처리).
+        이전에는 1년전체보기에서만 [올해] 버튼과 동일하게 달력 이동만 하고 선택은
+        바꾸지 않아 다른 서브탭과 동작이 달랐던 것을, 일관된 사용자 경험을 위해
+        모든 서브탭에서 동일하게 동작하도록 통일함. (반면 1년전체보기의 [올해]
+        마우스 버튼 자체는 go_to_year만 호출하는 기존 동작을 그대로 유지함 - 이번
+        요청은 Ctrl+T 단축키에 한정됨)"""
+        self.go_to_today()
+        return "break"
+
+    def focus_list(self, event=None):
+        """Ctrl+L: [목록보기] 서브탭으로 전환하고 날짜 목록에 포커스"""
+        self.cal_view_notebook.select(2)
+        self.date_listbox.focus_set()
+        if not self.date_listbox.curselection() and self._date_list_keys:
+            self.date_listbox.selection_set(0)
+            self.date_listbox.activate(0)
+        return "break"
+
+    def on_ctrl_n(self, event=None):
+        """Ctrl+N: [메모 추가] 팝업 열기 (날짜를 직접 입력해 새 메모를 시작함).
+        어느 서브탭(월별보기/1년전체보기/목록보기)에 있든 동일하게 동작함"""
+        self._open_add_memo_dialog()
+        return "break"
+
+    def on_page_up(self, event=None):
+        self.go_to_adjacent_memo_date(-1)
+        return "break"
+
+    def on_page_down(self, event=None):
+        self.go_to_adjacent_memo_date(1)
+        return "break"
+
+    def insert_text_at_widget(self, widget, text):
+        if widget is self.date_content_text:
+            try:
+                self.date_content_text.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+            self.date_content_text.insert(tk.INSERT, text)
+            self.save_date_memo_realtime()
+            return True
+        return False
+
+    # ---- 서브탭(월별보기/1년전체보기/목록보기) 및 날짜 이동 ----
 
     def _today_str(self):
         return datetime.now().strftime("%Y-%m-%d")
@@ -1341,13 +1548,24 @@ class CalendarMemoTab:
         except Exception:
             return False
 
+    def _is_list_view_active(self):
+        try:
+            return self.cal_view_notebook.index(self.cal_view_notebook.select()) == 2
+        except Exception:
+            return False
+
     def _on_cal_view_tab_changed(self, event=None):
-        """[월별보기]/[1년전체] 전환 시, 그 사이 다른 날짜를 클릭해 갱신이 미뤄져 있었다면
-        (성능을 위해 보이지 않는 뷰는 즉시 다시 그리지 않으므로) 지금 그려준다."""
+        """[월별보기]/[1년전체보기]/[목록보기] 전환 시, 그 사이 다른 날짜를 클릭해
+        갱신이 미뤄져 있었다면(성능을 위해 보이지 않는 뷰는 즉시 다시 그리지 않으므로)
+        지금 그려준다."""
         if self._is_year_view_active():
             if getattr(self, "_year_view_stale", False):
                 self.render_year_view()
                 self._year_view_stale = False
+        elif self._is_list_view_active():
+            if getattr(self, "_list_view_stale", False):
+                self._refresh_date_list()
+                self._list_view_stale = False
         else:
             if getattr(self, "_month_view_stale", False):
                 self.render_month_view()
@@ -1394,16 +1612,9 @@ class CalendarMemoTab:
     def go_to_today(self):
         """[월별보기]의 "오늘" 버튼: 화면을 오늘이 있는 달로 이동함과 동시에 오늘 날짜를
         선택하여 오른쪽 편집창도 오늘 메모로 전환한다.
-        (반면 [1년전체]의 "올해" 버튼은 go_to_year를 그대로 호출해 화면 이동만 하고
+        (반면 [1년전체보기]의 "올해" 버튼은 go_to_year를 그대로 호출해 화면 이동만 하고
         편집 중인 날짜는 바꾸지 않는다.)"""
         self.on_calendar_date_click(self._today_str())
-
-    def on_ctrl_t(self):
-        """달력메모 탭에서 Ctrl+T: 월별보기면 [오늘], 1년전체면 [올해] 버튼과 동일하게 동작"""
-        if self._is_year_view_active():
-            self.go_to_year(datetime.now().year)
-        else:
-            self.go_to_today()
 
     def on_calendar_date_click(self, date_key):
         """달력의 날짜 칸 클릭: 해당 날짜를 선택하고 오른쪽에 그 날짜의 메모 내용을 표시.
@@ -1442,14 +1653,20 @@ class CalendarMemoTab:
         self.on_calendar_date_click(target)
 
     def _refresh_calendar_views(self):
-        """현재 보이는 달력 뷰만 즉시 다시 그리고, 다른 쪽은 다음에 그 탭으로
+        """현재 보이는 달력 뷰만 즉시 다시 그리고, 다른 쪽들은 다음에 그 탭으로
         전환될 때 그리도록 표시만 해둔다(불필요한 위젯 재생성을 피해 반응성을 유지)."""
         if self._is_year_view_active():
             self.render_year_view()
             self._month_view_stale = True
+            self._list_view_stale = True
+        elif self._is_list_view_active():
+            self._refresh_date_list()
+            self._month_view_stale = True
+            self._year_view_stale = True
         else:
             self.render_month_view()
             self._year_view_stale = True
+            self._list_view_stale = True
 
     def save_date_memo_realtime(self, event=None):
         """달력메모 내용을 실시간으로 memos_calendar.json에 저장.
@@ -1477,8 +1694,9 @@ class CalendarMemoTab:
         self.app.update_status_bar()
 
     def _update_remove_date_memo_button_state(self):
-        """[메모 제거] 버튼을 현재 date_content_text 내용이 있을 때만 활성화.
-        (Ctrl+D 단축키도 이 버튼 상태를 그대로 확인해서 동작 여부를 결정함)"""
+        """[메모 제거] 버튼(이전메모/다음메모/메모추가와 같은 공용 하단 행)을 현재
+        date_content_text 내용이 있을 때만 활성화. (Ctrl+D 단축키도 이 상태를 그대로
+        확인해서 동작 여부를 결정함)"""
         has_content = bool(self.date_content_text.get("1.0", tk.END).strip())
         self.remove_date_memo_button.config(state=(tk.NORMAL if has_content else tk.DISABLED))
 
@@ -1493,11 +1711,130 @@ class CalendarMemoTab:
             self.on_calendar_date_click(self.selected_date)
         return "break"
 
+    # ---- 목록보기 ----
+
+    def _refresh_date_list(self):
+        """[목록보기]의 날짜 목록을 현재 메모가 있는 날짜만, 날짜순으로 다시 그림.
+        [공휴일 표시] 체크박스가 켜져 있으면 holidays.json에 등록된 날짜 옆에
+        "| 공휴일이름"을 덧붙임 (예: "2026-09-25 (금) | 추석")."""
+        self.date_listbox.delete(0, tk.END)
+        self._date_list_keys = sorted(self.calendar_memos.keys())
+        weekdays_kr = ["월", "화", "수", "목", "금", "토", "일"]
+        show_holidays = self.show_holidays_var.get()
+        for date_key in self._date_list_keys:
+            try:
+                d = datetime.strptime(date_key, "%Y-%m-%d")
+                label = f"{date_key} ({weekdays_kr[d.weekday()]})"
+            except Exception:
+                label = date_key
+            if show_holidays:
+                holiday_name = self.holidays.get(date_key)
+                if holiday_name:
+                    label = f"{label} | {holiday_name}"
+            self.date_listbox.insert(tk.END, label)
+        if self.selected_date in self._date_list_keys:
+            idx = self._date_list_keys.index(self.selected_date)
+            self.date_listbox.selection_set(idx)
+            self.date_listbox.activate(idx)
+            self.date_listbox.see(idx)
+
+    def _on_toggle_show_holidays(self):
+        """[공휴일 표시] 체크박스(및 Alt+H)로 목록보기의 각 날짜 옆에 공휴일 이름을
+        같이 보여줄지 전환하고, 다음 실행에도 기억하도록 settings.ini에 저장함"""
+        self.app.settings_mgr.settings["show_holidays_in_list"] = self.show_holidays_var.get()
+        self.app.settings_mgr.save()
+        self._refresh_date_list()
+
+    def on_alt_h(self, event=None):
+        """Alt+H: [목록보기] 서브탭이 활성화되어 있을 때만 "공휴일 표시" 체크박스를
+        켜고 끔 (다른 서브탭에서는 이 체크박스가 보이지 않으므로 아무 동작도 하지 않음)"""
+        if not self._is_list_view_active():
+            return None
+        self.show_holidays_var.set(not self.show_holidays_var.get())
+        self._on_toggle_show_holidays()
+        return "break"
+
+    def _on_date_listbox_select(self, event=None):
+        sel = self.date_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if 0 <= idx < len(self._date_list_keys):
+            date_key = self._date_list_keys[idx]
+            if date_key != self.selected_date:
+                self.on_calendar_date_click(date_key)
+
+    def _open_add_memo_dialog(self, event=None):
+        """[메모 추가] 버튼 및 Ctrl+N: 날짜를 직접 입력해 그 날짜로 이동함.
+        (실제 메모 항목은 이 창이 아니라, 이동한 뒤 오른쪽 편집창에 내용을 입력해야
+        생김 - 달력메모는 내용이 있어야만 "메모가 있다"고 취급하는 기존 규칙과 동일)"""
+        dialog = Toplevel(self.app.root)
+        dialog.title("메모 추가")
+        dialog.resizable(False, False)
+        dialog.transient(self.app.root)
+        dialog.grab_set()
+        dialog.focus_force()
+
+        date_var = tk.StringVar(value=self._today_str())
+
+        ttk.Label(dialog, text="날짜:", font=UI_FONT).grid(row=0, column=0, padx=(15, 5), pady=15, sticky="w")
+        date_spin = ttk.Spinbox(dialog, textvariable=date_var, width=12, font=UI_FONT)
+        date_spin.grid(row=0, column=1, padx=(0, 15), pady=15, sticky="w")
+        date_spin.focus_set()
+        date_spin.icursor(tk.END)
+
+        def adjust_date(delta):
+            try:
+                d = datetime.strptime(date_var.get().strip(), "%Y-%m-%d").date()
+            except ValueError:
+                d = date.today()
+            date_var.set((d + timedelta(days=delta)).strftime("%Y-%m-%d"))
+
+        # ttk.Spinbox의 기본 클래스 바인딩이 <<Increment>>/<<Decrement>>에서 텍스트를
+        # 숫자로 취급해 자체적으로 증감을 시도하므로(break 없음), 날짜 문자열을 다시
+        # 덮어쓰지 못하게 반드시 "break"로 막아야 함 (Ctrl+Shift+D 팝업과 동일한 패턴)
+        def on_increment(e=None):
+            adjust_date(1)
+            return "break"
+
+        def on_decrement(e=None):
+            adjust_date(-1)
+            return "break"
+
+        date_spin.bind("<<Increment>>", on_increment)
+        date_spin.bind("<<Decrement>>", on_decrement)
+
+        def on_confirm(event=None):
+            raw = date_var.get().strip()
+            try:
+                date_key = datetime.strptime(raw, "%Y-%m-%d").date().strftime("%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("오류", "날짜를 YYYY-MM-DD 형식으로 입력하세요.", parent=dialog)
+                return
+            already_exists = date_key in self.calendar_memos
+            dialog.destroy()
+            if already_exists:
+                messagebox.showinfo("알림", "해당 날짜에는 이미 메모가 있습니다.", parent=self.app.root)
+            self.on_calendar_date_click(date_key)
+            if not already_exists:
+                self.date_content_text.focus_set()
+
+        def on_cancel():
+            dialog.destroy()
+
+        date_spin.bind("<Return>", on_confirm)
+        dialog.bind("<Escape>", lambda e: on_cancel())
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.grid(row=1, column=0, columnspan=2, pady=(0, 15))
+        ttk.Button(button_frame, text="확인", command=on_confirm, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="취소", command=on_cancel, width=10).pack(side=tk.LEFT, padx=5)
+
     # ---- 렌더링 ----
 
     def render_month_view(self):
         """[월별보기] 그리드를 현재 self.cal_year/self.cal_month 기준으로 다시 그림
-        (1년전체 보기와 폭을 맞추기 위해 왼쪽에 빈 칸(0열)을 두고 요일 칸은 1~7열에 그림)"""
+        (1년전체보기와 폭을 맞추기 위해 왼쪽에 빈 칸(0열)을 두고 요일 칸은 1~7열에 그림)"""
         self._hide_holiday_tooltip()  # 재구성 전, 떠 있을 수 있는 풍선말 정리
         for widget in self.month_grid_frame.winfo_children():
             widget.destroy()
@@ -1530,6 +1867,17 @@ class CalendarMemoTab:
         for d in range(1, trailing + 1):
             cells.append((d, f"{next_year:04d}-{next_month:02d}-{d:02d}", True))
 
+        # 0열은 1년전체보기와 폭을 맞추기 위해 비워두는 칸인데, month_grid_frame 자체의
+        # 배경색이 격자선 효과를 위해 border색(회색 계열)으로 칠해져 있어(apply_theme_colors
+        # 참고) 그 위에 아무 위젯도 없으면 이 칸만 세로로 긴 회색 사각형처럼 보이는 문제가
+        # 있었음. 1년전체보기가 이 칸에 월 숫자 라벨을 채우는 것과 같은 방식으로, 패널
+        # 배경색(bg)의 빈 라벨을 각 행 0열에 채워 넣어 폭은 유지하면서 티 나지 않게 함
+        colors = THEME_COLORS.get(self.app.settings_mgr.theme_mode, THEME_COLORS["light"])
+        num_rows = len(cells) // 7
+        for row in range(num_rows):
+            tk.Label(self.month_grid_frame, text="", width=3, bg=colors["bg"]
+                      ).grid(row=row, column=0, sticky="nsew", padx=1, pady=1)
+
         for idx, (day, key, other) in enumerate(cells):
             row, col = divmod(idx, 7)
             if other:
@@ -1543,7 +1891,7 @@ class CalendarMemoTab:
             self._make_day_cell(self.month_grid_frame, row, col + 1, day, kind, key)
 
     def render_year_view(self):
-        """[1년전체] 그리드를 현재 self.cal_year_year 기준으로 다시 그림
+        """[1년전체보기] 그리드를 현재 self.cal_year_year 기준으로 다시 그림
         (1월 1일이 속한 주의 일요일부터 12월 31일이 속한 주의 토요일까지 이어서 표시)"""
         self._hide_holiday_tooltip()  # 재구성 전, 떠 있을 수 있는 풍선말 정리
         for widget in self.year_grid_frame.winfo_children():
@@ -1659,28 +2007,28 @@ class CalendarMemoTab:
             self._holiday_tooltip = None
 
     # ---- 전용 단축키 (Alt+M/Y/좌우, Ctrl+Shift+D) ----
+    # (아래 네 메서드는 MemoApp이 "달력메모 탭이 활성화되어 있을 때만" 호출해주므로,
+    # 예전과 달리 이 메서드들 스스로 활성 탭을 확인할 필요가 없음)
 
     def on_alt_m(self, event=None):
-        """Alt+M: 달력메모 탭이 활성화된 상태에서만, [월별보기] 서브탭 활성화
-        (Ctrl+M은 이미 "메모 내용 편집창에 포커스"로 양쪽 탭에서 쓰이고 있어서
+        """Alt+M: [월별보기] 서브탭 활성화
+        (Ctrl+M은 이미 "메모 내용 편집창에 포커스"로 모든 탭에서 쓰이고 있어서
         서브탭 전환은 Alt 계열로 분리함)"""
-        if self.app._is_general_tab_active():
-            return
         self.cal_view_notebook.select(0)
         return "break"
 
     def on_alt_y(self, event=None):
-        """Alt+Y: 달력메모 탭이 활성화된 상태에서만, [1년전체] 서브탭 활성화"""
-        if self.app._is_general_tab_active():
-            return
+        """Alt+Y: [1년전체보기] 서브탭 활성화"""
         self.cal_view_notebook.select(1)
         return "break"
 
+    def on_alt_l(self, event=None):
+        """Alt+L: [목록보기] 서브탭 활성화"""
+        self.cal_view_notebook.select(2)
+        return "break"
+
     def on_alt_left(self, event=None):
-        """Alt+왼쪽 방향키: 달력메모 탭이 활성화된 상태에서만, 월별보기면 이전 달로,
-        1년전체면 이전 해로 이동"""
-        if self.app._is_general_tab_active():
-            return
+        """Alt+왼쪽 방향키: 월별보기면 이전 달로, 1년전체면 이전 해로 이동"""
         if self._is_year_view_active():
             self.go_to_year(self.cal_year_year - 1)
         else:
@@ -1689,22 +2037,17 @@ class CalendarMemoTab:
 
     def on_alt_right(self, event=None):
         """Alt+오른쪽 방향키: on_alt_left 참고 (반대 방향)"""
-        if self.app._is_general_tab_active():
-            return
         if self._is_year_view_active():
             self.go_to_year(self.cal_year_year + 1)
         else:
             self.go_to_month(self.cal_year, self.cal_month + 1)
         return "break"
 
-    def open_bulk_delete_dialog(self, event=None):
+    def on_ctrl_shift_d(self, event=None):
         """Ctrl+Shift+D (고급 사용자용 숨김 기능, 버튼 없음): 특정 날짜 이전에
         저장된 달력메모를 한꺼번에 삭제하는 팝업. 일반메모는 작성/저장 날짜를
         따로 기록하지 않는 데이터 구조라 이 기능의 대상이 될 수 없으므로,
-        달력메모(날짜별로 저장되는 메모)에만 적용됨.
-        달력메모 탭이 활성화된 상태에서만 동작함."""
-        if self.app._is_general_tab_active():
-            return
+        달력메모(날짜별로 저장되는 메모)에만 적용됨."""
         dialog = Toplevel(self.app.root)
         dialog.title("메모 일괄 삭제")
         dialog.geometry("380x250")
@@ -1812,8 +2155,13 @@ class CalendarMemoTab:
                 self.app.save_calendar_memos()
                 self.date_content_text.delete("1.0", tk.END)
                 self.date_content_text.insert("1.0", self.calendar_memos.get(self.selected_date, ""))
+                self._update_remove_date_memo_button_state()
                 self.render_month_view()
                 self.render_year_view()
+                self._refresh_date_list()
+                self._month_view_stale = False
+                self._year_view_stale = False
+                self._list_view_stale = False
                 self.app.update_status_bar()
                 messagebox.showinfo("성공", "달력메모를 성공적으로 가져왔습니다.")
         except json.JSONDecodeError:
@@ -1905,7 +2253,7 @@ class MemoApp:
         self.status_bar = ttk.Label(root, text="", relief=tk.SUNKEN, anchor=tk.W, font=("맑은 고딕", 10))
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # 메뉴막대 아래 [일반메모]/[달력메모] 탭 - 하위의 [월별보기]/[1년전체]
+        # 메뉴막대 아래 [일반메모]/[달력메모] 탭 - 하위의 [월별보기]/[1년전체보기]/[목록보기]
         # 탭과 똑같아 보이지 않도록, 최상위 탭 전용 스타일(더 큰 볼드체 + 넉넉한 여백)을
         # 적용해 시각적 위계를 분명히 함.
         top_tab_style = ttk.Style()
@@ -1924,33 +2272,46 @@ class MemoApp:
         self.general_tab = GeneralMemoTab(general_frame, self)
         self.calendar_tab = CalendarMemoTab(calendar_frame, self)
         # 새 탭을 추가하려면 위처럼 만든 뒤 여기 리스트에 추가하면, 테마/글꼴/
-        # 상태표시줄이 자동으로 그 탭까지 반영함 (파일 위 안내 주석 참고)
+        # 상태표시줄이 자동으로 그 탭까지 반영함 (파일 위 안내 주석 참고).
+        # 이 리스트 순서는 반드시 위 notebook.add() 순서와 같아야 함 - _active_tab()이
+        # notebook 탭 인덱스로 이 리스트를 그대로 찾아 쓰기 때문
         self.tabs = [self.general_tab, self.calendar_tab]
 
         self.create_menu()
 
-        # 단축키 등록
-        self.root.bind("<Control-n>", self._on_ctrl_n_key)
-        self.root.bind("<Control-d>", self._on_ctrl_d_key)
+        # ---- 단축키 등록 ----
+        # 아래는 전부 root 레벨에 한 번만 바인딩하고, 실제 동작은 그 순간의 활성
+        # 탭(self._active_tab())에게 위임한다. 각 라우터 메서드는 활성 탭에 해당
+        # 이름의 메서드가 있으면 호출하고 없으면 조용히 넘어가므로, 새 탭이
+        # 그 메서드를 구현하지 않으면 자동으로 이 단축키에서 아무 효과가 없다.
         self.root.bind("<Control-Tab>", lambda event: self._cycle_top_tab(1))
         self.root.bind("<Control-Shift-Tab>", lambda event: self._cycle_top_tab(-1))
+
+        # 공통 단축키 (탭마다 의미가 다름 - 각 라우터 메서드 주석 참고)
+        self.root.bind("<Control-n>", self._on_ctrl_n_key)
+        self.root.bind("<Control-d>", self._on_ctrl_d_key)
         self.root.bind("<Control-m>", self._on_ctrl_m_key)
-        # 고급 사용자용 숨김 기능: 버튼 없이 단축키로만 진입 (탭 구분 없이 항상 동작)
-        self.root.bind("<Control-Shift-D>", self.calendar_tab.open_bulk_delete_dialog)
-        self.root.bind("<Alt-m>", self.calendar_tab.on_alt_m)
-        self.root.bind("<Alt-y>", self.calendar_tab.on_alt_y)
-        self.root.bind("<Alt-Left>", self.calendar_tab.on_alt_left)
-        self.root.bind("<Alt-Right>", self.calendar_tab.on_alt_right)
-        self.root.bind("<Prior>", self._on_prior_key)
-        self.root.bind("<Next>", self._on_next_key)
         self.root.bind("<Control-l>", self.focus_on_listbox)
         self.root.bind("<Control-t>", self.focus_on_title)
+        self.root.bind("<Prior>", self._on_prior_key)
+        self.root.bind("<Next>", self._on_next_key)
         self.root.bind("<Alt-t>", self.insert_datetime)
         # 빠른 입력 단축키 (Alt+1 ~ Alt+9, Alt+0)
         # Windows에서는 <Alt-1>처럼 특정 숫자 keysym을 그대로 bind()하면
         # WM_SYSKEYDOWN 처리 특성상 이벤트가 씹혀 동작하지 않는 경우가 있어,
         # <Alt-KeyPress>로 Alt+모든 키 입력을 받은 뒤 내부에서 눌린 키를 판별한다.
         self.root.bind("<Alt-KeyPress>", self._on_alt_number_keypress)
+
+        # 탭 전용 단축키 (구현한 탭이 활성화되어 있을 때만 동작함)
+        self.root.bind("<Alt-m>", self._on_alt_m_key)
+        self.root.bind("<Alt-y>", self._on_alt_y_key)
+        self.root.bind("<Alt-l>", self._on_alt_l_key)
+        self.root.bind("<Alt-h>", self._on_alt_h_key)
+        self.root.bind("<Alt-Left>", self._on_alt_left_key)
+        self.root.bind("<Alt-Right>", self._on_alt_right_key)
+        # 고급 사용자용 숨김 기능: 버튼 없이 단축키로만 진입 (달력메모 탭 전용)
+        self.root.bind("<Control-Shift-D>", self._on_ctrl_shift_d_key)
+
         # 복사 단축키는 설정에 따라 바인딩
         self.settings_mgr.bind_copy_shortcut()
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
@@ -2054,18 +2415,21 @@ class MemoApp:
         idx = self.notebook.index(self.notebook.select())
         return self.tabs[idx]
 
-    def _is_general_tab_active(self):
-        try:
-            return self.notebook.index(self.notebook.select()) == 0
-        except Exception:
-            return True
+    def _dispatch_to_active_tab(self, method_name, event=None):
+        """활성 탭에 method_name 메서드가 있으면 event를 넘겨 호출하고 그 결과를
+        반환하며, 없으면 아무 일도 하지 않고 None을 반환함. 공통/탭 전용 단축키
+        라우터들이 공유하는 핵심 로직 (파일 위 "앱 구조 안내" 참고)."""
+        method = getattr(self._active_tab(), method_name, None)
+        if method:
+            return method(event)
+        return None
 
     def apply_theme_colors(self):
-        """ttk가 테마를 입히지 못하는 Listbox/Text/달력 Canvas 위젯에 현재 테마 색상을
-        적용. (Frame/Label/Entry/Button 등은 sv_ttk가 자동으로 처리하지만, Listbox와
-        Text, 달력의 Canvas/Label은 ttk 위젯이 아니라서 색상을 직접 맞춰줘야 함)
-        각 탭의 위젯 색칠은 그 탭 스스로 담당하고(apply_theme_colors), 여기서는
-        모든 탭에 방송만 함 - 새 탭을 추가해도 이 메서드는 그대로 둬도 됨."""
+        """ttk가 테마를 입히지 못하는 Listbox/Text/달력 Canvas 위젯에
+        현재 테마 색상을 적용. (Frame/Label/Entry/Button 등은
+        sv_ttk가 자동으로 처리함) 각 탭의 위젯 색칠은 그 탭 스스로 담당하고
+        (apply_theme_colors), 여기서는 모든 탭에 방송만 함 - 새 탭을 추가해도
+        이 메서드는 그대로 둬도 됨."""
         colors = THEME_COLORS.get(self.settings_mgr.theme_mode, THEME_COLORS["light"])
         for tab in self.tabs:
             tab.apply_theme_colors(colors)
@@ -2077,7 +2441,8 @@ class MemoApp:
             pass
 
     def copy_to_clipboard(self, event=None):
-        """활성 탭에 맞는 내용을 복사 (각 탭의 get_copy_target()이 대상을 알려줌)"""
+        """활성 탭에 맞는 내용을 복사 (각 탭의 get_copy_target()이 대상을 알려줌.
+        대상이 없는 탭은 None을 반환해 아무 일도 일어나지 않음)"""
         target = self._active_tab().get_copy_target()
         if target is None:
             return "break"
@@ -2109,64 +2474,28 @@ class MemoApp:
         self.root.after(1000, lambda: label.config(text=""))
 
     def _insert_text_at_focus(self, text):
-        """포커스된 위젯(제목/내용/달력메모 내용)의 커서 위치에 문자열을 삽입하는 공통 로직.
+        """포커스된 위젯의 커서 위치에 문자열을 삽입하는 공통 로직.
         (Alt+T 날짜/시간 삽입, Alt+숫자 빠른 입력에서 공용으로 사용)
-        제목 입력창/메모 내용/달력메모 내용, 이 세 위젯 중 하나에 실제로 포커스가
-        있을 때만 삽입한다. (이전에는 셋 다 아니면 무조건 content_text 끝에 삽입해서,
-        예를 들어 일반메모 편집 중 달력메모 탭으로 이동해 아무 것도 포커스하지 않은
-        상태로 Alt+T/Alt+숫자를 눌러도 일반메모의 마지막 메모에 엉뚱하게 삽입되는
-        문제가 있었음 - PageUp/PageDown이 다른 위젯에서도 리스트 순서를 바꾸던
-        버그와 같은 종류의 문제)"""
+        각 탭에게 순서대로 "이 위젯이 네 삽입 대상이니?"라고 물어보고(insert_text_at_widget),
+        맞다고 답한 첫 번째 탭에서 멈춘다. 아무 탭도 그 위젯을 모르면(예: 포커스가
+        버튼이나 리스트에 있는 경우) 조용히 아무 일도 하지 않는다 - 예전에는 세 위젯 중
+        하나에도 포커스가 없으면 엉뚱하게 마지막 메모 끝에 삽입되던 버그가 있었음."""
         focused = self.root.focus_get()
-        gt, ct = self.general_tab, self.calendar_tab
-
-        if focused is gt.title_entry:
-            try:
-                gt.title_entry.delete("sel.first", "sel.last")
-            except tk.TclError:
-                pass
-            gt.title_entry.insert(tk.INSERT, text)
-            gt.update_memo_realtime(update_list=True)
+        if focused is None:
             return
-
-        if focused is ct.date_content_text:
-            try:
-                ct.date_content_text.delete("sel.first", "sel.last")
-            except tk.TclError:
-                pass
-            ct.date_content_text.insert(tk.INSERT, text)
-            ct.save_date_memo_realtime()
-            return
-
-        if focused is gt.content_text:
-            try:
-                gt.content_text.delete("sel.first", "sel.last")
-            except tk.TclError:
-                pass
-            gt.content_text.insert(tk.INSERT, text)
-            gt.update_memo_realtime(update_list=False)
-            return
-
-        # 위 세 위젯 중 어디에도 포커스가 없으면 아무 것도 하지 않음
+        for tab in self.tabs:
+            method = getattr(tab, "insert_text_at_widget", None)
+            if method and method(focused, text):
+                return
 
     def insert_datetime(self, event=None):
         """Alt+T: 포커스된 위젯의 커서 위치에 현재 날짜/시간을 삽입 (yyyy-mm-dd hh:mm:ss)"""
-        if self._is_general_tab_active():
-            if self.general_tab.current_index == -1:
-                return "break"
-        elif not self.calendar_tab.selected_date:
-            return "break"
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._insert_text_at_focus(now_str)
         return "break"
 
     def insert_quick_text(self, key, event=None):
         """Alt+1~Alt+0: 설정 메뉴 > 빠른 입력 설정에서 미리 지정한 문구를 삽입"""
-        if self._is_general_tab_active():
-            if self.general_tab.current_index == -1:
-                return "break"
-        elif not self.calendar_tab.selected_date:
-            return "break"
         text = self.settings_mgr.quick_inputs.get(key, "")
         if not text:
             # 해당 슬롯에 등록된 문구가 없으면 아무 동작도 하지 않음
@@ -2191,9 +2520,13 @@ class MemoApp:
         return None
 
     # ---- 탭을 넘나드는 단축키 라우터 ----
+    # 아래 라우터들은 전부 같은 형태다: "활성 탭에 이 이름의 메서드가 있으면 호출하고,
+    # 없으면 아무 일도 하지 않는다." 그래서 탭이 늘어나거나 줄어도 이 메서드들
+    # 자체는 손댈 필요가 없고, 각 탭 클래스에 그 이름의 메서드를 만들거나 지우기만
+    # 하면 된다.
 
     def _cycle_top_tab(self, direction):
-        """Ctrl+Tab(+1)/Ctrl+Shift+Tab(-1): 일반메모/달력메모 탭 전환.
+        """Ctrl+Tab(+1)/Ctrl+Shift+Tab(-1): 탭 전환.
         (ttk.Notebook 자체의 기본 Ctrl+Tab 처리는 노트북 위젯 본인이 포커스일
         때만 동작해 평소 편집 중엔 적용되지 않으므로, root 레벨에서 직접 처리함)"""
         tabs = self.notebook.tabs()
@@ -2202,83 +2535,75 @@ class MemoApp:
         return "break"
 
     def _on_ctrl_m_key(self, event=None):
-        """Ctrl+M: 현재 탭에 맞는 메모 내용 편집창에 포커스만 이동
-        (일반메모 탭: content_text / 달력메모 탭: date_content_text).
+        """Ctrl+M: 현재 탭에 맞는 "내용" 위젯에 포커스만 이동함
+        (일반메모: content_text / 달력메모: date_content_text).
         Ctrl+T(제목)와 달리 전체선택은 하지 않고 포커스만 옮김"""
-        if self._is_general_tab_active():
-            gt = self.general_tab
-            if str(gt.content_text.cget("state")) == tk.NORMAL:
-                gt.content_text.focus_set()
-        else:
-            self.calendar_tab.date_content_text.focus_set()
+        self._dispatch_to_active_tab("focus_content", event)
         return "break"
 
     def _on_ctrl_n_key(self, event=None):
-        """Ctrl+N: 일반메모 탭이 활성화된 상태에서만 새 메모를 추가.
-        (다른 대부분의 단축키처럼 _is_general_tab_active()를 확인함 - 이 확인이
-        없으면 달력메모 탭에서 무심코 Ctrl+N을 눌렀을 때 화면엔 아무 변화가 없는데
-        일반메모 목록에 빈 메모가 조용히 하나 추가되는 문제가 있었음)"""
-        if not self._is_general_tab_active():
-            return "break"
-        self.general_tab.add_memo()
+        """Ctrl+N: 탭마다 "새 항목"의 의미가 다름
+        (일반메모: 새 메모 추가 / 달력메모: 날짜를 입력하는 [메모 추가] 팝업)"""
+        method = getattr(self._active_tab(), "on_ctrl_n", None)
+        if method:
+            return method(event)
         return "break"
 
     def _on_ctrl_d_key(self, event=None):
-        """Ctrl+D: 일반메모 탭에서는 제목/내용에 포커스가 있을 때 선택된 메모를
-        삭제, 달력메모 탭에서는 (포커스 위치와 무관하게) 선택된 날짜의 메모
-        내용을 삭제. 메모 목록 자체에 포커스가 있을 때는 이미 Delete 키가 그
-        역할을 하고 있으므로 Ctrl+D는 관여하지 않음 (Alt+T/PageUp/PageDown과
-        같은, 포커스·탭 상태를 직접 확인하는 방식)"""
-        if not self._is_general_tab_active():
-            self.calendar_tab.remove_date_memo()
-            return "break"
-        gt = self.general_tab
-        focused = self.root.focus_get()
-        if focused is gt.title_entry or focused is gt.content_text:
-            gt.remove_memo()
-            return "break"
+        """Ctrl+D: 탭마다 "선택된 것 삭제"의 의미가 다름
+        (일반메모: 제목/내용에 포커스가 있을 때 메모 삭제 / 달력메모: 선택된
+        날짜의 메모 내용 삭제). 메모 목록 자체에 포커스가 있을 때는 이미 Delete
+        키가 그 역할을 하고 있으므로 관여하지 않음"""
+        return self._dispatch_to_active_tab("on_ctrl_d", event)
 
     def _on_prior_key(self, event=None):
-        """전역 PageUp 단축키: 달력메모 탭이 활성화된 상태면 (어느 위젯에 포커스가
-        있든) 항상 이전 메모 날짜로 이동. 일반메모 탭에서는 리스트박스에 포커스가
-        있을 때만 메모를 위로 이동.
-        (date_content_text에 포커스가 있는 경우는 그 위젯의 인스턴스 바인딩이
-        먼저 가로채 break로 처리하므로 이 함수까지 전파되지 않지만, 그 외 달력
-        탭 내 다른 위젯(버튼, 달력 칸 등)에 포커스가 있는 경우를 위해 필요함)"""
-        if not self._is_general_tab_active():
-            self.calendar_tab.go_to_adjacent_memo_date(-1)
-            return "break"
-        if self.general_tab._is_listbox_focused():
-            self.general_tab.move_memo_up()
+        """전역 PageUp: 탭마다 의미가 다름 (달력메모는 항상 이전 메모 날짜로 이동,
+        일반메모는 목록에 포커스가 있을 때만 순서 이동)"""
+        return self._dispatch_to_active_tab("on_page_up", event)
 
     def _on_next_key(self, event=None):
-        """전역 PageDown 단축키: _on_prior_key 참고 (반대 방향)"""
-        if not self._is_general_tab_active():
-            self.calendar_tab.go_to_adjacent_memo_date(1)
-            return "break"
-        if self.general_tab._is_listbox_focused():
-            self.general_tab.move_memo_down()
+        """전역 PageDown: _on_prior_key 참고 (반대 방향)"""
+        return self._dispatch_to_active_tab("on_page_down", event)
 
     def focus_on_listbox(self, event=None):
-        if not self._is_general_tab_active():
-            return "break"
-        self.general_tab.focus_on_listbox()
+        """Ctrl+L: 탭마다 다른 "목록"에 포커스 (일반메모: 메모 목록 / 달력메모:
+        [목록보기] 서브탭으로 전환하고 날짜 목록)"""
+        self._dispatch_to_active_tab("focus_list", event)
         return "break"
 
     def focus_on_title(self, event=None):
-        if not self._is_general_tab_active():
-            # 달력메모 탭에서 Ctrl+T: 월별보기면 [오늘], 1년전체면 [올해] 버튼과 동일하게 동작
-            self.calendar_tab.on_ctrl_t()
-            return "break"
-        self.general_tab.focus_on_title()
+        """Ctrl+T: 탭마다 다른 "주요 입력창/버튼"으로 이동 (일반메모: 제목 입력창 /
+        달력메모: 오늘 날짜 선택)"""
+        self._dispatch_to_active_tab("focus_primary", event)
         return "break"
+
+    def _on_alt_m_key(self, event=None):
+        return self._dispatch_to_active_tab("on_alt_m", event)
+
+    def _on_alt_y_key(self, event=None):
+        return self._dispatch_to_active_tab("on_alt_y", event)
+
+    def _on_alt_l_key(self, event=None):
+        return self._dispatch_to_active_tab("on_alt_l", event)
+
+    def _on_alt_h_key(self, event=None):
+        return self._dispatch_to_active_tab("on_alt_h", event)
+
+    def _on_alt_left_key(self, event=None):
+        return self._dispatch_to_active_tab("on_alt_left", event)
+
+    def _on_alt_right_key(self, event=None):
+        return self._dispatch_to_active_tab("on_alt_right", event)
+
+    def _on_ctrl_shift_d_key(self, event=None):
+        return self._dispatch_to_active_tab("on_ctrl_shift_d", event)
 
     # ---- 탭 전환/창 생명주기 ----
 
     def on_tab_changed(self, event=None):
-        """[일반메모]/[달력메모] 탭 전환 시 상태표시줄을 갱신하고, 방금 활성화된
-        탭에 on_activated()가 있으면 호출함(달력메모 탭은 이걸로 "오늘" 표시를
-        최신 날짜로 다시 그림 - 자정 경과 대비)."""
+        """[일반메모]/[달력메모] 탭 전환 시, 방금 활성화된 탭에 on_activated()가
+        있으면 호출한 뒤(달력메모 탭은 "오늘" 표시를 최신 날짜로 다시 그림 -
+        자정 경과 대비) 상태표시줄을 갱신함."""
         active = self._active_tab()
         on_activated = getattr(active, "on_activated", None)
         if on_activated:
